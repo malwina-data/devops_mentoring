@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Netflix Data</title>
+    <style>
+        /* Styl dla kontenera */
+        .container {
+            width: 50%; /* Ustaw szerokość kontenera na 50% szerokości okna przeglądarki */
+            margin: 0 auto; /* Wyśrodkuj kontener na stronie */
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* Styl dla tabeli */
+        table {
+            width: 80%; /* Ustaw szerokość tabeli na 100% szerokości kontenera */
+            border-collapse: collapse; /* Usuń odstępy między komórkami */
+        }
+
+        /* Styl dla nagłówków kolumn */
+        th {
+            text-transform: lowercase; /* Zamień nazwy kolumn na małe litery */
+            background-color: #f2f2f2; /* Tło nagłówków */
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* Styl dla komórek */
+        td, th {
+            border: 1px solid #dddddd; /* Dodaj obramowanie komórek */
+            text-align: left; /* Wyrównaj tekst do lewej */
+            padding: 8px; /* Dodaj wewnętrzne odstępy */
+        }
+    </style>
+</head>
+<body style="font-size: 9px;">
+    <h1>Netflix Data</h1>
+    <table>
+        <thead>
+            <tr>
+                <th>Show ID</th>
+                <th>Type</th>
+                <th>Title</th>
+                <th>Director</th>
+                <th>Cast</th>
+                <th>Country</th>
+                <th>Date Added</th>
+                <th>Release Year</th>
+                <th>Rating</th>
+                <th>Duration</th>
+                <th>Listed In</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in data %}
+            <tr>
+                <td>{{ row[0] }}</td>
+                <td>{{ row[1] }}</td>
+                <td>{{ row[2] }}</td>
+                <td>{{ row[3] }}</td>
+                <td>{{ row[4] }}</td>
+                <td>{{ row[5] }}</td>
+                <td>{{ row[6] }}</td>
+                <td>{{ row[7] }}</td>
+                <td>{{ row[8] }}</td>
+                <td>{{ row[9] }}</td>
+                <td>{{ row[10] }}</td>
+                <td>{{ row[11] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>
