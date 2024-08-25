@@ -40,8 +40,6 @@ bash
     │   ├── pg_hba.conf
     │   ├── templates/
     │   │   └── index.html
-    │   ├── show.py
-    │   ├── myproject_1.py
     │   ├── main.py
     │   ├── myproject.service
     │   └── wsgi.py
