@@ -1,5 +1,3 @@
-o ensure your playbook runs smoothly and you know how to execute it properly, I'll help you create a README.md file that provides clear instructions. This file will guide you through setting up and executing the Ansible playbook, including prerequisites, running the playbook, and troubleshooting steps. Here's a template you can use:
-AWS VPC and EC2 Setup with Ansible
 
 This project contains an Ansible playbook that creates an AWS Virtual Private Cloud (VPC), subnets, security groups, and launches EC2 instances for a PostgreSQL database and a web application. It also configures the instances, deploys a Flask web application, and sets up Nginx as a reverse proxy.
 Prerequisites
