@@ -1,1 +1,558 @@
+---
+- name: Create AWS VPC, Subnets, and Security Groups
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    group/aws:
+      aws_access_key: '{{ aws_access_key }}'
+      aws_secret_key: '{{ aws_secret_key }}'
+      region: '{{ region }}'
+  vars: 
+    ansible_python_interpreter: /usr/local/bin/python3 
+    key_file: "../vars/key.pem"
+    is_redhat: ansible_os_family == "RedHat"
+    inventory_file: "inventory.ini"
+    csv_file_path: "../vars/netflix_titles.csv"
+    s3_bucket: "netflix_titles"
+    s3_object_key: "netflix_titles.csv" 
+  vars_files:
+        - ../vars/aws_credentials.yaml
+  tasks:
+    - name: Create VPC
+      ec2_vpc_net:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        name: "{{ vpc_name }}"
+        state: present
+        cidr_block: "{{ vpc_cidr_block }}"
+        resource_tags:
+          Name: "{{ vpc_name }}"
+      register: ec2_vpc_net_result
+
+    - name: Create Internet Gateway for VPC
+      ec2_vpc_igw:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        state: present
+        tags:
+          name: "{{ igw_name }}"
+      register: igw_result
+#Creation Subnet and Route Table DB
+    - name: Create VPC Subnet - Db
+      ec2_vpc_subnet:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        az: "{{ zone }}"      
+        state: present
+        cidr: "{{ db_subnet_cidr_block }}"
+        map_public: yes
+        resource_tags:
+          Name: "{{ db_subnet_name }}"
+      register: db_subnet_result
+
+    - name: Create VPC Public Subnet Route Table - Db
+      ec2_vpc_route_table:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        state: present
+        tags:
+          Name: "{{ db_route_table_name }}"
+        subnets: [ "{{ db_subnet_result.subnet.id }}" ]
+        routes:
+          - dest: "{{ destination_cidr_block }}"
+            gateway_id: "{{ igw_result.gateway_id }}"
+      register: db_public_route_table
+
+#Creation Subnet and Route Table WEB
+    - name: Create VPC Subnet - Web
+      ec2_vpc_subnet:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        az: "{{ zone }}"
+        state: present
+        cidr: "{{ web_subnet_cidr_block }}"
+        map_public: yes
+        resource_tags:
+          Name: "{{ web_subnet_name }}"
+      register: web_subnet_result
+
+    - name: Create VPC Public Subnet Route Table - Web
+      ec2_vpc_route_table:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        state: present
+        tags:
+          Name: "{{ web_route_table_name }}"
+        subnets: [ "{{ web_subnet_result.subnet.id }}" ]
+        routes:
+          - dest: "{{ destination_cidr_block }}"
+            gateway_id: "{{ igw_result.gateway_id }}"
+      register: web_public_route_table
+
+    - name: Create Security Group
+      ec2_group:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        state: present
+        name: "{{ security_group_name }}"
+        description: "{{ security_group_name }}"
+        tags:
+          Name: "{{ security_group_name }}"
+        rules:
+          - proto: tcp      
+            ports: 
+              - 22
+            cidr_ip: "{{ port22_cidr_block }}"
+            rule_desc: Allow SSH from the internet
+          - proto: tcp
+            ports: 
+              - 5432
+            cidr_ip: "{{ port22_cidr_block }}"
+            rule_desc: allow PostgreSQL traffic from web subnet
+          - proto: tcp
+            ports: 
+              - 5001
+            cidr_ip: "{{ port22_cidr_block }}"
+            rule_desc: access for the app to the server
+          - proto: tcp
+            ports: 
+              - 80
+            cidr_ip: "{{ port22_cidr_block }}"
+            rule_desc: access for the app with nginx
+      register: security_group_results
+
+    - name: Launch a new EC2 instance with db key pair
+      community.aws.ec2_instance: 
+        name: "db"
+        key_name: "key"
+        instance_type: t2.micro
+        image_id: ami-04eeb630f180cea95  # Replace with your desired AMI ID
+        wait: yes
+        security_group: '{{ security_group_results.group_id }}'
+        vpc_subnet_id: "{{ db_subnet_result.subnet.id }}" 
+        network:
+          assign_public_ip: true
+      register: db_ec2
+      when: db_ec2.instance_ids is not defined 
+
+    - name: Wait for SSH to come up - db 
+      amazon.aws.ec2_instance_info:
+        region: "{{ region }}"
+        instance_ids: "{{ db_ec2.instance_ids[0] }}"
+      register: instance_info_db
+      until: instance_info_db.instances[0].state.name == 'running'
+      retries: 20
+      delay: 10
+    
+    - name: Add db-instance to host group
+      add_host:
+        name: db
+        groups: db-servers
+        ansible_host: "{{ instance_info_db.instances[0].public_ip_address }}"
+        ansible_user: ec2-user
+        ansible_ssh_private_key_file: "{{ key_file }}"
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+      when: instance_info_db.instances[0].public_ip_address is defined
+      register: db_ec2_public_ip
+
+    - name: Launch a new EC2 instance with web key pair
+      community.aws.ec2_instance: 
+        name: "web"
+        key_name: "key"
+        instance_type: t2.micro
+        image_id: ami-04eeb630f180cea95  
+        wait: yes
+        security_group: '{{ security_group_results.group_id }}'
+        vpc_subnet_id: "{{ web_subnet_result.subnet.id }}" 
+        network:
+          assign_public_ip: true
+      register: web_ec2
+      when: web_ec2.instance_ids is not defined 
+
+    - name: Wait for SSH to come up - web
+      amazon.aws.ec2_instance_info:
+        region: "{{ region }}"
+        instance_ids: "{{ web_ec2.instance_ids[0] }}"
+      register: instance_info_web
+      until: instance_info_web.instances[0].state.name == 'running'
+      retries: 20
+      delay: 10
+    
+    - name: Add web-instance to host group
+      add_host:
+        name: web
+        groups: web_servers
+        ansible_host: "{{ instance_info_web.instances[0].public_ip_address }}"
+        ansible_user: ec2-user
+        ansible_ssh_private_key_file: "{{ key_file }}"
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+      when: instance_info_web.instances[0].public_ip_address is defined
+      register: web_ec2_public_ip
+
+    - name: Create inventory.ini content
+      set_fact:
+        inventory_content: |
+          [web_instance]
+          {{ web_ec2_public_ip.add_host.host_name }} ansible_user=ec2-user ansible_ssh_private_key_file={{ key_file }} ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+          [db_instances]
+          {{ db_ec2_public_ip.add_host.host_name }} ansible_user=ec2-user ansible_ssh_private_key_file={{ key_file }} ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+    - name: Save inventory to file
+      copy:
+        content: "{{ inventory_content }}"
+        dest: "{{ inventory_file }}"
+      delegate_to: localhost
+
+
+    - name: Save variables to file
+      copy:
+        content: |
+          ---
+          region: "{{ region }}"
+          az: "{{ zone }}"
+          aws_access_key: "{{ aws_access_key }}"
+          aws_secret_key: "{{ aws_secret_key }}"
+          vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+          igw_id: "{{ igw_result.gateway_id }}"
+          db_subnet_id: "{{ db_subnet_result.subnet.id }}"
+          web_subnet_id: "{{ web_subnet_result.subnet.id }}"
+          db_route_table_id: "{{ db_public_route_table.route_table.id }}"
+          web_route_table_id: "{{ web_public_route_table.route_table.id }}"
+          security_group_id: "{{ security_group_results.group_id }}"
+          db_ec2_public_ip: "{{ db_ec2_public_ip }}"
+          web_ec2_public_ip: "{{ web_ec2_public_ip}}"
+        dest: "../vars/aws_generated_vars.yaml"
+
+- hosts: db
+  remote_user: ec2-user
+  become: true
+  vars:
+    is_redhat: ansible_os_family == "RedHat"
+    db_user: postgres
+    db_password: malwinka
+    db_name: netflix
+  vars_files:
+    - ../vars/aws_generated_vars.yaml
+  tasks:
+    - name: Update yum cache
+      yum:
+        update_cache: yes
+    - name: Install Python & Postgres
+      package:
+        name: "{{ item }}"
+        state: present
+      with_items:
+          - postgresql15.x86_64
+          - postgresql15-server
+          - python3-psycopg2
+          - python3-pip
+          - net-tools
+          - nc
+    - name: Find out if PostgreSQL is initialized
+      ansible.builtin.stat:
+        path: "/var/lib/pgsql/data/pg_hba.conf"
+      register: postgres_data
+    - name: Initialize PostgreSQL
+      shell: "postgresql-setup initdb"
+      when: not postgres_data.stat.exists
+    - name: Retry PostgreSQL service start
+      service:
+        name: postgresql
+        state: restarted
+    - name: Copy CSV with data to remote host
+      ansible.builtin.copy:
+        src: "../vars/netflix_titles.csv"
+        dest: "/tmp/netflix_titles.csv"
+    - name: Copy pg_hba.conf to the server with proper limitations
+      ansible.builtin.copy:
+        src: ../vars/pb_hba.conf
+        dest: /var/lib/pgsql/data/pg_hba.conf
+    - name: Configure PostgreSQL to listen on all addresses
+      ansible.builtin.lineinfile:
+        path: /var/lib/pgsql/data/postgresql.conf
+        regexp: '^#listen_addresses ='
+        line: "listen_addresses = '*'"
+        state: present
+    - name: Retry PostgreSQL service start
+      service:
+        name: postgresql
+        state: restarted
+      become: true
+      become_user: root
+    - name: Create app database
+      community.postgresql.postgresql_db:
+        name: "{{ db_name }}"
+        login_user: "{{ db_user }}"
+        login_password: "{{ db_password }}"
+        state: present
+      become: true
+      become_user: postgres
+    - name: Retry PostgreSQL service start
+      service:
+        name: postgresql
+        state: restarted
+      become: true
+      become_user: root
+    - name: Create table in PostgreSQL database
+      become: true
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        db: "{{ db_name }}"
+        login_user: "{{ db_user}}"
+        login_password: "{{ db_password }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS netflix_titles (
+            show_id TEXT PRIMARY KEY,
+            type TEXT,
+            title TEXT,
+            director TEXT,
+            cast_0 TEXT,
+            country TEXT,
+            date_added DATE,
+            release_year INTEGER,
+            rating TEXT,
+            duration TEXT,
+            listed_in TEXT,
+            description TEXT
+          );
+    - name: Delete existing data from netflix_titles
+      become: true
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        db: "{{ db_name }}"
+        login_user: "{{ db_user }}"
+        login_password: "{{ db_password }}"
+        query: "DELETE FROM netflix_titles;"
+    - name: Load CSV data into PostgreSQL table
+      become: true
+      become_user: postgres
+      shell: |
+        PGPASSWORD={{ db_password }} psql -U {{ db_user }} -d {{ db_name }} -c "\COPY netflix_titles FROM '/tmp/netflix_titles.csv' DELIMITER ',' CSV HEADER;"
+      register: query_result
+    - name: Retry PostgreSQL service start
+      service:
+        name: postgresql
+        state: restarted
+      become: true
+      become_user: root
+- hosts: web
+  remote_user: ec2-user
+  become: true
+  vars:
+    is_redhat: ansible_os_family == "RedHat"
+    db_user: postgres
+    db_password: malwinka
+    db_name: netflix
+  vars_files:
+    - ../vars/aws_generated_vars.yaml
+  tasks:
+    - name: Extract IP address - Convert db_ec2_public_ip to YAML
+      set_fact:
+        db_ec2_public_ip_parsed: "{{ db_ec2_public_ip | from_yaml }}"
+    - name: Extract IP address - Set uo a variable db_ec2_public_ip
+      set_fact:
+        db_ip_address: "{{ db_ec2_public_ip_parsed.add_host.host_vars.ansible_host }}"
+    - name: Extract IP address - Convert web_ec2_public_ip to YAML
+      set_fact:
+        web_ec2_public_ip_parsed: "{{ web_ec2_public_ip | from_yaml }}"
+    - name: Extract IP address - Set uo a variable web_ec2_public_ip
+      set_fact:
+        web_ip_address: "{{ web_ec2_public_ip_parsed.add_host.host_vars.ansible_host }}"
+
+    - name: Make a file - myproject
+      ansible.builtin.file:
+        path: /home/ec2-user/myproject
+        state: directory
+        mode: '0755'
+    - name: Make a file - templates
+      ansible.builtin.file:
+        path: /home/ec2-user/myproject/templates
+        state: directory
+        mode: '0755'
+    - name: Make a file - sites-available for nginx
+      ansible.builtin.file:
+        path: "/home/ec2-user/etc/nginx/sites-available"
+        state: directory
+        mode: '0755'
+
+    - name: Copy - templates and index 
+      ansible.builtin.copy:
+        src: "../vars/templates/index.html"
+        dest: "/home/ec2-user/myproject/templates/index.html"
+    - name: Copy - test app to the host
+      ansible.builtin.copy:
+        src: "../vars/show.py"
+        dest: "/home/ec2-user/myproject/show.py"        
+    - name: Copy - test app to the host
+      ansible.builtin.copy:
+        src: "../vars/myproject_1.py"
+        dest: "/home/ec2-user/myproject/myproject_1.py"
+    - name: Copy - main app to the host
+      ansible.builtin.copy:
+        src: "../vars/main.py"
+        dest: "/home/ec2-user/myproject/main.py"
+    - name: Copy - myproject.service to the host
+      ansible.builtin.copy:
+        src: "../vars/myproject.service"
+        dest: "/etc/systemd/system/myproject.service"
+    - name: Copy - wsgi.py to the host
+      ansible.builtin.copy:
+        src: "../vars/wsgi.py"
+        dest: "/home/ec2-user/myproject/wsgi.py"
+
+    - name: Install - Python & Postgres & Nginx
+      package:
+        name: "{{ item }}"
+        state: present
+      with_items:
+          - postgresql15.x86_64
+          - postgresql15-server
+          - python3-psycopg2
+          - python3-pip
+          - net-tools
+          - nc
+          - python3-virtualenv
+          - python3-setuptools
+          - nginx
+
+    - name: PostgreSQL - Check if is already initialized
+      ansible.builtin.stat:
+        path: "/var/lib/pgsql/data/pg_hba.conf"
+      register: postgres_data
+    - name: PostgreSQL - Initialize 
+      shell: "postgresql-setup initdb"
+      when: not postgres_data.stat.exists
+    - name: Copy - pg_hba.conf 
+      ansible.builtin.copy:
+        src: ../vars/pb_hba.conf
+        dest: /var/lib/pgsql/data/pg_hba.conf
+    - name: PostgreSQL - restart
+      service:
+        name: postgresql
+        state: restarted
+      become: true
+      become_user: root
+  
+    - name: Configure PostgreSQL to listen on all addresses
+      ansible.builtin.lineinfile:
+        path: /var/lib/pgsql/data/postgresql.conf
+        regexp: '^#listen_addresses ='
+        line: "listen_addresses = '*'"
+        state: present
+    - name: Retry PostgreSQL service start
+      service:
+        name: postgresql
+        state: restarted
+      become: true
+      become_user: root
+    - name: Test PostgreSQL connection
+      postgresql_ping:
+        login_user: "{{ db_user }}"
+        login_password: "{{ db_password }}"
+        host: "{{ db_ip_address }}"
+        port: 5432
+      register: result_ping
+    - debug:
+        var: result_ping
+
+    - name: Python Enviroment - Create
+      ansible.builtin.command: python3 -m venv /home/ec2-user/myproject/venv
+      args:
+        creates: /home/ec2-user/myproject/venv/bin/activate       
+    - name: Python Enviroment - Upgrade
+      ansible.builtin.command: /home/ec2-user/myproject/venv/bin/python3 -m pip install --upgrade pip
+    - name: Python Enviroment - Install required Python packages
+      command: /home/ec2-user/myproject/venv/bin/pip install psycopg2-binary wheel gunicorn flask
+
+    - name: Install Nginx on Amazon Linux
+      ansible.builtin.yum:
+        name: nginx
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Create config file
+      copy:
+        content: |
+          {
+            "DB_USER": "{{ db_user }}",
+            "DB_PASSWORD": "{{ db_password }}",
+            "DB_NAME": "{{ db_name }}",
+            "DB_IP_ADDRESS": "{{ db_ip_address }}"
+          }
+        dest: /home/ec2-user/myproject/config.json
+    - name: Set permissions for the project directory
+      file:
+        path: /home/ec2-user/myproject
+        owner: ec2-user
+        group: ec2-user
+        mode: '0755'
+        recurse: yes
+
+    - name: Start Nginx
+      service:
+        name: nginx
+        state: started
+    
+    - name: Display db_ip_address
+      debug:
+        msg: "The IP address is {{ web_ip_address }}"
+    - name: Create Nginx configuration file with dynamic values
+      ansible.builtin.copy:
+        content: |
+          server {
+              listen 80;
+              server_name {{ web_ip_address }};
+
+              location / {
+                  proxy_pass http://localhost:5001;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+
+              error_page 404 /404.html;
+              location = /404.html {
+              }
+
+              error_page 500 502 503 504 /50x.html;
+              location = /50x.html {
+              }
+          }
+        dest: "/etc/nginx/conf.d/myproject.conf" 
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: Myproject.service - Start
+      systemd:
+        name: myproject.service
+        state: started  
+    - name: Myproject.service - Enable 
+      systemd:
+        name: myproject.service
+        enabled: yes
+    - name: Myproject.service - Check the status
+      command: systemctl status myproject.service
+      register: service_status
+    - name: Myproject.service - Print the status
+      debug:
+        msg: "{{ service_status.stdout }}"
+
 
