@@ -393,14 +393,6 @@
       ansible.builtin.copy:
         src: "../vars/templates/index.html"
         dest: "/home/ec2-user/myproject/templates/index.html"
-    - name: Copy - test app to the host
-      ansible.builtin.copy:
-        src: "../vars/show.py"
-        dest: "/home/ec2-user/myproject/show.py"        
-    - name: Copy - test app to the host
-      ansible.builtin.copy:
-        src: "../vars/myproject_1.py"
-        dest: "/home/ec2-user/myproject/myproject_1.py"
     - name: Copy - main app to the host
       ansible.builtin.copy:
         src: "../vars/main.py"
