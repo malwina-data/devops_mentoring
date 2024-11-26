@@ -1,6 +1,6 @@
 {
-    "aws_access_key": "AKIATCKATQKHK6T7ITCR",
-    "aws_secret_key": "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",
+    "aws_access_key": "##",
+    "aws_secret_key": "##",
     "az": "sa-east-1a",
     "db_route_table_id": "rtb-06f2bc437348e0d67",
     "db_subnet_id": "subnet-0d29501aa2c5ef6b1",
