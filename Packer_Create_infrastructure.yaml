@@ -1,0 +1,168 @@
+---
+- name: Create AWS VPC, Subnets, and Security Groups
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    group/aws:
+      aws_access_key: '{{ aws_access_key }}'
+      aws_secret_key: '{{ aws_secret_key }}'
+      region: '{{ region }}'
+  vars: 
+    ansible_python_interpreter: /usr/local/bin/python3 
+    key_file: "../vars/key.pem"
+    is_redhat: ansible_os_family == "RedHat"
+    inventory_file: "inventory.ini"
+    csv_file_path: "../vars/netflix_titles.csv"
+    s3_bucket: "netflix_titles"
+    s3_object_key: "netflix_titles.csv" 
+  vars_files:
+        - ../vars/aws_credentials.yaml
+  tasks:
+    - name: Create VPC
+      ec2_vpc_net:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        name: "{{ vpc_name }}"
+        state: present
+        cidr_block: "{{ vpc_cidr_block }}"
+        resource_tags:
+          Name: "{{ vpc_name }}"
+      register: ec2_vpc_net_result
+
+    - name: Create Internet Gateway for VPC
+      ec2_vpc_igw:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        state: present
+        tags:
+          name: "{{ igw_name }}"
+      register: igw_result
+#Creation Subnet and Route Table DB
+    - name: Create VPC Subnet - Db
+      ec2_vpc_subnet:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        az: "{{ zone }}"      
+        state: present
+        cidr: "{{ db_subnet_cidr_block }}"
+        map_public: yes
+        resource_tags:
+          Name: "{{ db_subnet_name }}"
+      register: db_subnet_result
+
+    - name: Create VPC Public Subnet Route Table - Db
+      ec2_vpc_route_table:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        state: present
+        tags:
+          Name: "{{ db_route_table_name }}"
+        subnets: [ "{{ db_subnet_result.subnet.id }}" ]
+        routes:
+          - dest: "{{ destination_cidr_block }}"
+            gateway_id: "{{ igw_result.gateway_id }}"
+      register: db_public_route_table
+
+#Creation Subnet and Route Table WEB
+    - name: Create VPC Subnet - Web
+      ec2_vpc_subnet:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        az: "{{ zone }}"
+        state: present
+        cidr: "{{ web_subnet_cidr_block }}"
+        map_public: yes
+        resource_tags:
+          Name: "{{ web_subnet_name }}"
+      register: web_subnet_result
+
+    - name: Create VPC Public Subnet Route Table - Web
+      ec2_vpc_route_table:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        state: present
+        tags:
+          Name: "{{ web_route_table_name }}"
+        subnets: [ "{{ web_subnet_result.subnet.id }}" ]
+        routes:
+          - dest: "{{ destination_cidr_block }}"
+            gateway_id: "{{ igw_result.gateway_id }}"
+      register: web_public_route_table
+
+    - name: Create Security Group
+      ec2_group:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+        region: "{{ region }}"
+        state: present
+        name: "{{ security_group_name }}"
+        description: "{{ security_group_name }}"
+        tags:
+          Name: "{{ security_group_name }}"
+        rules:
+          - proto: tcp      
+            ports: 
+              - 22
+            cidr_ip: "{{ port22_cidr_block }}"
+            rule_desc: Allow SSH from the internet
+          - proto: tcp
+            ports: 
+              - 5432
+            cidr_ip: "{{ port22_cidr_block }}"
+            rule_desc: allow PostgreSQL traffic from web subnet
+          - proto: tcp
+            ports: 
+              - 5001
+            cidr_ip: "{{ port22_cidr_block }}"
+            rule_desc: access for the app to the server
+          - proto: tcp
+            ports: 
+              - 80
+            cidr_ip: "{{ port22_cidr_block }}"
+            rule_desc: access for the app with nginx
+      register: security_group_results
+#checking if key is the same
+
+    - name: Save variables to file
+      copy:
+        content: |
+          ---
+          region: "{{ region }}"
+          az: "{{ zone }}"
+          aws_access_key: "{{ aws_access_key }}"
+          aws_secret_key: "{{ aws_secret_key }}"
+          vpc_id: "{{ ec2_vpc_net_result.vpc.id }}"
+          igw_id: "{{ igw_result.gateway_id }}"
+          db_subnet_id: "{{ db_subnet_result.subnet.id }}"
+          web_subnet_id: "{{ web_subnet_result.subnet.id }}"
+          db_route_table_id: "{{ db_public_route_table.route_table.id }}"
+          web_route_table_id: "{{ web_public_route_table.route_table.id }}"
+          security_group_id: "{{ security_group_results.group_id }}"
+        dest: "../vars/aws_generated_vars.yaml"
+
+    - name: Read YAML file
+      ansible.builtin.slurp:
+        src: "../vars/aws_generated_vars.yaml"
+      register: slurped_file
+
+    - name: Decode base64 and convert YAML to JSON
+      set_fact:
+        yaml_data: "{{ slurped_file['content'] | b64decode | from_yaml }}"
+
+    - name: Convert YAML to JSON and save to file
+      copy:
+        content: "{{ yaml_data | to_nice_json }}"
+        dest: "../vars/aws_generated_vars.json"
