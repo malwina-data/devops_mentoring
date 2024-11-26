@@ -1,0 +1,9 @@
+---
+region: "sa-east-1"
+vpc_id: "vpc-0db3b7799445003aa"
+igw_id: "igw-05a6f1389f6f0d0fc"
+db_subnet_id: "subnet-08905df3dd7c30e9a"
+web_subnet_id: "subnet-01c4a8a54dabacffa"
+db_route_table_id: "rtb-083d6240598db2f13"
+web_route_table_id: "rtb-0cdf2450945f2a153"
+security_group_id: "sg-0e7a73b68cc94fa94"
